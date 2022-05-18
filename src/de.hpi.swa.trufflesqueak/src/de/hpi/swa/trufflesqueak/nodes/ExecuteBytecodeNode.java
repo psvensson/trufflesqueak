@@ -8,9 +8,12 @@ package de.hpi.swa.trufflesqueak.nodes;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.instrumentation.Tag;
+import com.oracle.truffle.api.nodes.BytecodeOSRNode;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.LoopNode;
 import com.oracle.truffle.api.source.Source;
@@ -30,7 +33,7 @@ import de.hpi.swa.trufflesqueak.util.ArrayUtils;
 import de.hpi.swa.trufflesqueak.util.FrameAccess;
 import de.hpi.swa.trufflesqueak.util.LogUtils;
 
-public final class ExecuteBytecodeNode extends AbstractExecuteContextNode {
+public final class ExecuteBytecodeNode extends AbstractExecuteContextNode implements BytecodeOSRNode {
     private static final int LOCAL_RETURN_PC = -2;
 
     private final CompiledCodeObject code;
@@ -41,6 +44,7 @@ public final class ExecuteBytecodeNode extends AbstractExecuteContextNode {
     @Child private HandlePrimitiveFailedNode handlePrimitiveFailedNode;
     @Children private AbstractBytecodeNode[] bytecodeNodes;
     @Child private HandleNonLocalReturnNode handleNonLocalReturnNode;
+    @CompilationFinal private Object osrMetadata;
 
     public ExecuteBytecodeNode(final CompiledCodeObject code) {
         this.code = code;
@@ -127,6 +131,12 @@ public final class ExecuteBytecodeNode extends AbstractExecuteContextNode {
                 final int successor = ((UnconditionalJumpNode) node).getSuccessorIndex();
                 if (CompilerDirectives.hasNextTier() && successor <= pc) {
                     backJumpCounter.value++;
+                    if (CompilerDirectives.inInterpreter() && BytecodeOSRNode.pollOSRBackEdge(this)) {
+                        returnValue = BytecodeOSRNode.tryOSR(this, successor, null, null, frame);
+                        if (returnValue != null) {
+                            break bytecode_loop;
+                        }
+                    }
                 }
                 pc = successor;
                 continue bytecode_loop;
@@ -184,6 +194,46 @@ public final class ExecuteBytecodeNode extends AbstractExecuteContextNode {
         }
         return handleNonLocalReturnNode;
     }
+
+    /*
+     * Bytecode OSR support
+     */
+
+    @Override
+    public Object executeOSR(final VirtualFrame osrFrame, final int target, final Object interpreterState) {
+        return execute(osrFrame, target);
+    }
+
+    @Override
+    public Object getOSRMetadata() {
+        return osrMetadata;
+    }
+
+    @Override
+    public void setOSRMetadata(final Object osrMetadata) {
+        this.osrMetadata = osrMetadata;
+    }
+
+    @Override
+    public Object[] storeParentFrameInArguments(final VirtualFrame parentFrame) {
+        final Object[] parentArguments = parentFrame.getArguments();
+        final Object[] newArguments = new Object[parentArguments.length + 1];
+        System.arraycopy(parentArguments, 0, newArguments, 0, parentArguments.length);
+        // FIXME: avoid overwriting FrameMarker / context here (find better way or add dedicated
+        // argument slot?)
+        // assert parentArguments[1] == null;
+        newArguments[1 /* SENDER_OR_SENDER_MARKER.ordinal() */] = parentFrame;
+        return newArguments;
+    }
+
+    @Override
+    public Frame restoreParentFrameFromArguments(final Object[] arguments) {
+        return (Frame) arguments[1];
+    }
+
+    /*
+     * Node metadata
+     */
 
     @Override
     public boolean isInstrumentable() {
