@@ -630,6 +630,10 @@ public final class CompiledCodeObject extends AbstractSqueakObjectWithClassAndHa
         return decoder.hasStoreIntoTemp1AfterCallPrimitive(this);
     }
 
+    public int pcPreviousTo(final int pc) {
+        return decoder.pcPreviousTo(this, pc);
+    }
+
     /*
      * CompiledBlock
      */

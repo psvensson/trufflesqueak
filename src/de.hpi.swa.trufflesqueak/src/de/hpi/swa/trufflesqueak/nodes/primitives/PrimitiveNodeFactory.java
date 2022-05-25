@@ -69,7 +69,7 @@ public final class PrimitiveNodeFactory {
     public static final int PRIMITIVE_ON_DO_MARKER_INDEX = 199;
     public static final int PRIMITIVE_LOAD_INST_VAR_LOWER_INDEX = 264;
     public static final int PRIMITIVE_LOAD_INST_VAR_UPPER_INDEX = 520;
-    private static final int MAX_PRIMITIVE_INDEX = 575;
+    private static final int MAX_PRIMITIVE_INDEX = 578;
     @CompilationFinal(dimensions = 1) private static final byte[] NULL_MODULE_NAME = NullPlugin.class.getSimpleName().getBytes();
 
     private static final EconomicMap<Integer, AbstractPrimitiveNode> SINGLETON_PRIMITIVE_TABLE = EconomicMap.create();
