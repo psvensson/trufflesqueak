@@ -13,6 +13,7 @@ import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.instrumentation.Tag;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.LoopNode;
+import com.oracle.truffle.api.nodes.NodeUtil;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
 
@@ -24,6 +25,8 @@ import de.hpi.swa.trufflesqueak.nodes.bytecodes.JumpBytecodes.ConditionalJumpNod
 import de.hpi.swa.trufflesqueak.nodes.bytecodes.JumpBytecodes.UnconditionalJumpNode;
 import de.hpi.swa.trufflesqueak.nodes.bytecodes.ReturnBytecodes.AbstractReturnNode;
 import de.hpi.swa.trufflesqueak.nodes.bytecodes.SendBytecodes.AbstractSendNode;
+import de.hpi.swa.trufflesqueak.nodes.interrupts.CheckForInterruptsNode;
+import de.hpi.swa.trufflesqueak.nodes.interrupts.CheckForInterruptsQuickNode;
 import de.hpi.swa.trufflesqueak.nodes.primitives.AbstractPrimitiveNode;
 import de.hpi.swa.trufflesqueak.nodes.primitives.PrimitiveNodeFactory;
 import de.hpi.swa.trufflesqueak.util.ArrayUtils;
@@ -41,6 +44,7 @@ public final class ExecuteBytecodeNode extends AbstractExecuteContextNode {
     @Child private HandlePrimitiveFailedNode handlePrimitiveFailedNode;
     @Children private AbstractBytecodeNode[] bytecodeNodes;
     @Child private HandleNonLocalReturnNode handleNonLocalReturnNode;
+    @Child private CheckForInterruptsNode interruptHandlerNode;
 
     public ExecuteBytecodeNode(final CompiledCodeObject code) {
         this.code = code;
@@ -128,6 +132,10 @@ public final class ExecuteBytecodeNode extends AbstractExecuteContextNode {
                 if (CompilerDirectives.hasNextTier() && successor <= pc) {
                     backJumpCounter.value++;
                 }
+                if (interruptHandlerNode != null) { // check for interrupts in trivial loops
+                    FrameAccess.setInstructionPointer(frame, successor);
+                    interruptHandlerNode.execute(frame);
+                }
                 pc = successor;
                 continue bytecode_loop;
             } else if (node instanceof AbstractReturnNode) {
@@ -163,8 +171,32 @@ public final class ExecuteBytecodeNode extends AbstractExecuteContextNode {
     private AbstractBytecodeNode fetchNextBytecodeNode(final VirtualFrame frame, final int pcZeroBased) {
         if (bytecodeNodes[pcZeroBased] == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            bytecodeNodes[pcZeroBased] = insert(code.bytecodeNodeAt(frame, pcZeroBased));
+            final AbstractBytecodeNode newBytecodeNode = code.bytecodeNodeAt(frame, pcZeroBased);
+            bytecodeNodes[pcZeroBased] = insert(newBytecodeNode);
             notifyInserted(bytecodeNodes[pcZeroBased]);
+            if (newBytecodeNode instanceof UnconditionalJumpNode) {
+                final int successorZeroBased = ((UnconditionalJumpNode) newBytecodeNode).getSuccessorIndex() - initialPC;
+                if (successorZeroBased < pcZeroBased) { // back jump
+                    boolean containsCheckForInterrupt = false;
+                    for (int i = successorZeroBased; i < pcZeroBased; i++) {
+                        final AbstractBytecodeNode node = bytecodeNodes[i];
+                        if (node instanceof AbstractSendNode) {
+                            final AbstractSendNode sendNode = (AbstractSendNode) node;
+                            if (NodeUtil.findFirstNodeInstance(sendNode, CheckForInterruptsQuickNode.class) != null ||
+                                            NodeUtil.findFirstNodeInstance(sendNode, CheckForInterruptsNode.class) != null) {
+                                containsCheckForInterrupt = true;
+                            }
+                        }
+                    }
+                    if (!containsCheckForInterrupt) {
+                        /*
+                         * Loop body is trivial because it has not actual calls, which would check
+                         * for interrupts. So check for interrupts within the bytecode loop.
+                         */
+                        interruptHandlerNode = insert(CheckForInterruptsNode.create());
+                    }
+                }
+            }
         }
         return bytecodeNodes[pcZeroBased];
     }
